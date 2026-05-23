@@ -58,7 +58,7 @@ class DoliStockReturnService
 	{
 		$this->ensureGenericTraceabilitySchema();
 
-		$entityKey = ($objectType === 'supplier_credit_note' ? 'invoice_supplier' : 'invoice');
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'facture_fourn' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
 		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
@@ -91,7 +91,7 @@ class DoliStockReturnService
 	{
 		$this->ensureGenericTraceabilitySchema();
 
-		$entityKey = ($objectType === 'supplier_credit_note' ? 'invoice_supplier' : 'invoice');
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'facture_fourn' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
 		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
@@ -567,10 +567,15 @@ class DoliStockReturnService
 		}
 
 		if (getDolGlobalInt('DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE')) {
-			$sourceMap = $this->getSourceWarehouseMap((int) $creditNote->fk_facture_source);
+			$sourceResult = $this->getSourceWarehouseMap((int) $creditNote->fk_facture_source);
+			$sourceMap = $sourceResult['map'];
 			$sourceOk = true;
 			foreach ($lines as $line) {
 				$productId = (int) $line['fk_product'];
+				if (!empty($sourceResult['ambiguous'][$productId])) {
+					$this->setError($langs->trans('DoliStockReturnSourceWarehouseAmbiguousManualRequired'));
+					return array();
+				}
 				if (empty($sourceMap[$productId])) {
 					$sourceOk = false;
 					break;
@@ -651,12 +656,11 @@ class DoliStockReturnService
 	 * Get warehouse map from original stock output movements.
 	 *
 	 * @param int $sourceInvoiceId Source invoice id
-	 * @return array<int,int>
+	 * @return array{map:array<int,int>,ambiguous:array<int,int>}
 	 */
 	private function getSourceWarehouseMap($sourceInvoiceId)
 	{
-		$map = array();
-		$ambiguous = array();
+		$result = array('map' => array(), 'ambiguous' => array());
 
 		$sql = "SELECT fk_product, fk_entrepot";
 		$sql .= " FROM ".$this->db->prefix()."stock_mouvement";
@@ -666,26 +670,46 @@ class DoliStockReturnService
 		$sql .= " AND fk_product IS NOT NULL";
 		$sql .= " GROUP BY fk_product, fk_entrepot";
 
-		$resql = $this->db->query($sql);
-		if (!$resql) {
-			$this->setError($this->db->lasterror());
-			return array();
-		}
+		$this->accumulateWarehouseRows($sql, $result);
 
-		while ($obj = $this->db->fetch_object($resql)) {
-			$productId = (int) $obj->fk_product;
-			if (isset($map[$productId]) && (int) $map[$productId] !== (int) $obj->fk_entrepot) {
-				$ambiguous[$productId] = 1;
-				unset($map[$productId]);
-				continue;
-			}
-			if (empty($ambiguous[$productId])) {
-				$map[$productId] = (int) $obj->fk_entrepot;
-			}
-		}
-		$this->db->free($resql);
+		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
+		$sql .= " INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'commande'";
+		$sql .= " WHERE ei.fk_target = ".((int) $sourceInvoiceId);
+		$sql .= " AND ei.sourcetype = 'commande'";
+		$sql .= " AND ei.targettype = 'facture'";
+		$sql .= " AND sm.value < 0";
+		$sql .= " AND sm.fk_product IS NOT NULL";
+		$sql .= " GROUP BY sm.fk_product, sm.fk_entrepot";
 
-		return $map;
+		$this->accumulateWarehouseRows($sql, $result);
+
+		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
+		$sql .= " INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'shipping'";
+		$sql .= " WHERE ei.fk_target = ".((int) $sourceInvoiceId);
+		$sql .= " AND ei.sourcetype = 'shipping'";
+		$sql .= " AND ei.targettype = 'facture'";
+		$sql .= " AND sm.value < 0";
+		$sql .= " AND sm.fk_product IS NOT NULL";
+		$sql .= " GROUP BY sm.fk_product, sm.fk_entrepot";
+
+		$this->accumulateWarehouseRows($sql, $result);
+
+		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
+		$sql .= " INNER JOIN ".$this->db->prefix()."element_element as es ON es.fk_source = ei.fk_source AND es.sourcetype = 'commande' AND es.targettype = 'shipping'";
+		$sql .= " INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = es.fk_target AND sm.origintype = 'shipping'";
+		$sql .= " WHERE ei.fk_target = ".((int) $sourceInvoiceId);
+		$sql .= " AND ei.sourcetype = 'commande'";
+		$sql .= " AND ei.targettype = 'facture'";
+		$sql .= " AND sm.value < 0";
+		$sql .= " AND sm.fk_product IS NOT NULL";
+		$sql .= " GROUP BY sm.fk_product, sm.fk_entrepot";
+
+		$this->accumulateWarehouseRows($sql, $result);
+
+		return $result;
 	}
 
 	/**
@@ -707,9 +731,18 @@ class DoliStockReturnService
 		$sql .= " GROUP BY fk_product, fk_entrepot";
 
 		$this->accumulateWarehouseRows($sql, $result);
-		if (!empty($result['map']) || !empty($result['ambiguous'])) {
-			return $result;
-		}
+
+		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
+		$sql .= " INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'order_supplier'";
+		$sql .= " WHERE ei.fk_target = ".((int) $sourceInvoiceId);
+		$sql .= " AND ei.sourcetype = 'order_supplier'";
+		$sql .= " AND ei.targettype = 'invoice_supplier'";
+		$sql .= " AND sm.value > 0";
+		$sql .= " AND sm.fk_product IS NOT NULL";
+		$sql .= " GROUP BY sm.fk_product, sm.fk_entrepot";
+
+		$this->accumulateWarehouseRows($sql, $result);
 
 		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
 		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
