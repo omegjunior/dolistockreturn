@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS `llx_dolistockreturn_return` (
   `rowid` int(11) NOT NULL AUTO_INCREMENT,
   `entity` int(11) NOT NULL DEFAULT 1,
+  `object_type` varchar(32) NOT NULL DEFAULT 'customer_credit_note',
+  `direction` varchar(8) NOT NULL DEFAULT 'in',
   `fk_credit_note` int(11) NOT NULL,
   `fk_source_invoice` int(11) NOT NULL,
   `fk_entrepot` int(11) DEFAULT NULL,
@@ -10,7 +12,7 @@ CREATE TABLE IF NOT EXISTS `llx_dolistockreturn_return` (
   `fk_user_create` int(11) NOT NULL,
   `note_private` text,
   PRIMARY KEY (`rowid`),
-  UNIQUE KEY `uk_dolistockreturn_credit_note` (`fk_credit_note`, `entity`),
+  UNIQUE KEY `uk_dolistockreturn_credit_note` (`object_type`, `fk_credit_note`, `entity`),
   KEY `idx_dolistockreturn_source_invoice` (`fk_source_invoice`),
   KEY `idx_dolistockreturn_entrepot` (`fk_entrepot`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -122,7 +122,7 @@ class modDolistockreturn extends DolibarrModules
 			'hooks' => array(
 				'data' => array(
 				    'invoicecard',
-				    'globalcard',
+				    'invoicesuppliercard',
 				),
 				//   'entity' => '0',
 			),
@@ -178,6 +178,9 @@ class modDolistockreturn extends DolibarrModules
 			2 => array('DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE', 'chaine', '1', 'Use source invoice stock movement warehouse when possible', 0, 'current', 1),
 			3 => array('DOLISTOCKRETURN_DEFAULT_WAREHOUSE', 'chaine', '', 'Default warehouse for credit note stock returns', 0, 'current', 1),
 			4 => array('DOLISTOCKRETURN_NON_STOCKABLE_POLICY', 'chaine', 'ignore', 'Policy for non stockable lines: ignore or block', 0, 'current', 1),
+			5 => array('DOLISTOCKRETURN_ENABLE_SUPPLIER_BUTTON', 'chaine', '1', 'Show supplier stock output button on eligible supplier credit notes', 0, 'current', 1),
+			6 => array('DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE', 'chaine', '1', 'Use source supplier stock movement warehouse when possible', 0, 'current', 1),
+			7 => array('DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE', 'chaine', '', 'Default warehouse for supplier credit note stock outputs', 0, 'current', 1),
 		);
 
 		// Some keys to add into the overwriting translation tables

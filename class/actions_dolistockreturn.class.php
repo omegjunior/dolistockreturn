@@ -134,6 +134,30 @@ class ActionsDolistockreturn extends CommonHookActions
 
 		}
 
+		if (in_array($parameters['currentcontext'], array('invoicesuppliercard')) && $action == 'confirm_dolistockreturn_supplier') {
+			$langs->load('dolistockreturn@dolistockreturn');
+
+			if (!$user->hasRight('dolistockreturn', 'return', 'write')) {
+				accessforbidden();
+			}
+
+			if (!GETPOST('confirm', 'alpha') || GETPOST('confirm', 'alpha') !== 'yes') {
+				return 0;
+			}
+
+			$warehouseId = GETPOSTINT('fk_entrepot');
+			$service = new DoliStockReturnService($db);
+			$result = $service->createSupplierStockOutput($object, $warehouseId, $user);
+			if ($result > 0) {
+				setEventMessages($langs->trans('DoliStockReturnSupplierDone'), null, 'mesgs');
+				header('Location: '.$_SERVER['PHP_SELF'].'?facid='.(int) $object->id);
+				exit;
+			}
+
+			setEventMessages($service->error, $service->errors, 'errors');
+			return -1;
+		}
+
 		return 0;
 	}
 
@@ -432,7 +456,7 @@ class ActionsDolistockreturn extends CommonHookActions
 	{
 		global $db, $langs, $user;
 
-		if (!in_array($parameters['currentcontext'], array('invoicecard')) || $action !== 'dolistockreturn') {		// do something only for the context 'somecontext1' or 'somecontext2'
+		if (!in_array($parameters['currentcontext'], array('invoicecard', 'invoicesuppliercard')) || !in_array($action, array('dolistockreturn', 'dolistockreturn_supplier'))) {		// do something only for the context 'somecontext1' or 'somecontext2'
 			return 0;
 		}
 
@@ -442,10 +466,18 @@ class ActionsDolistockreturn extends CommonHookActions
 			return 0;
 		}
 
+		$isSupplier = ($parameters['currentcontext'] == 'invoicesuppliercard');
 		$service = new DoliStockReturnService($db);
-		if (!$service->isEligibleCreditNote($object)) {
-			setEventMessages($service->error, $service->errors, 'errors');
-			return 0;
+		if ($isSupplier) {
+			if (!$service->isEligibleSupplierCreditNote($object)) {
+				setEventMessages($service->error, $service->errors, 'errors');
+				return 0;
+			}
+		} else {
+			if (!$service->isEligibleCreditNote($object)) {
+				setEventMessages($service->error, $service->errors, 'errors');
+				return 0;
+			}
 		}
 
 		require_once DOL_DOCUMENT_ROOT.'/core/class/html.form.class.php';
@@ -453,16 +485,17 @@ class ActionsDolistockreturn extends CommonHookActions
 		$form = new Form($db);
 		$formproduct = new FormProduct($db);
 
-		$defaultWarehouse = (int) getDolGlobalString('DOLISTOCKRETURN_DEFAULT_WAREHOUSE');
+		$defaultWarehouse = (int) getDolGlobalString($isSupplier ? 'DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE' : 'DOLISTOCKRETURN_DEFAULT_WAREHOUSE');
 		$selectedWarehouse = $defaultWarehouse > 0 ? $defaultWarehouse : '';
 
 		$formquestion = array();
-		if (getDolGlobalInt('DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE')) {
+		$useSourceWarehouse = getDolGlobalInt($isSupplier ? 'DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE' : 'DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE');
+		if ($useSourceWarehouse) {
 			$formquestion[] = array(
 				'type' => 'other',
 				'name' => 'fk_entrepot',
 				'label' => $langs->trans('DoliStockReturnWarehouse'),
-				'value' => '<select class="flat minwidth300" name="fk_entrepot"><option value="0">'.$langs->trans('DoliStockReturnWarehouseAuto').'</option></select>',
+				'value' => '<select class="flat minwidth300" name="fk_entrepot"><option value="0">'.$langs->trans($isSupplier ? 'DoliStockReturnSupplierWarehouseAuto' : 'DoliStockReturnWarehouseAuto').'</option></select>',
 			);
 		} else {
 			$formquestion[] = array(
@@ -473,7 +506,7 @@ class ActionsDolistockreturn extends CommonHookActions
 			);
 		}
 
-		if (getDolGlobalInt('DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE')) {
+		if ($useSourceWarehouse) {
 			$formquestion[] = array(
 				'type' => 'other',
 				'name' => 'manual_fk_entrepot',
@@ -482,11 +515,11 @@ class ActionsDolistockreturn extends CommonHookActions
 			);
 		}
 
-		$text = $langs->trans('DoliStockReturnConfirmText');
+		$text = $langs->trans($isSupplier ? 'DoliStockReturnSupplierConfirmText' : 'DoliStockReturnConfirmText');
 		$url = $_SERVER['PHP_SELF'].'?facid='.(int) $object->id;
-		$this->resprints = $form->formconfirm($url, $langs->trans('DoliStockReturnConfirmTitle'), $text, 'confirm_dolistockreturn', $formquestion, 'yes', 1);
+		$this->resprints = $form->formconfirm($url, $langs->trans($isSupplier ? 'DoliStockReturnSupplierConfirmTitle' : 'DoliStockReturnConfirmTitle'), $text, $isSupplier ? 'confirm_dolistockreturn_supplier' : 'confirm_dolistockreturn', $formquestion, 'yes', 1);
 
-		if (getDolGlobalInt('DOLISTOCKRETURN_USE_SOURCE_WAREHOUSE')) {
+		if ($useSourceWarehouse) {
 			$this->resprints .= '<script>
 			jQuery(function() {
 				jQuery("select[name=manual_fk_entrepot]").on("change", function() {
@@ -514,26 +547,33 @@ class ActionsDolistockreturn extends CommonHookActions
 	{
 		global $db, $langs, $user;
 		
-		if (!in_array($parameters['currentcontext'], array('invoicecard'))) {		// do something only for the context 'somecontext1' or 'somecontext2'
+		if (!in_array($parameters['currentcontext'], array('invoicecard', 'invoicesuppliercard'))) {		// do something only for the context 'somecontext1' or 'somecontext2'
 			return 0;
 		}
 
 		$langs->load('dolistockreturn@dolistockreturn');
-		
-		if (!getDolGlobalInt('DOLISTOCKRETURN_ENABLE_BUTTON') || !$user->hasRight('dolistockreturn', 'return', 'write')) {
+
+		$isSupplier = ($parameters['currentcontext'] == 'invoicesuppliercard');
+		$enableConst = $isSupplier ? 'DOLISTOCKRETURN_ENABLE_SUPPLIER_BUTTON' : 'DOLISTOCKRETURN_ENABLE_BUTTON';
+		if (!getDolGlobalInt($enableConst) || !$user->hasRight('dolistockreturn', 'return', 'write')) {
 			return 0;
 		}
 
 		$service = new DoliStockReturnService($db);
 		
-		if ($service->hasAlreadyReturned((int) $object->id)) {
-			print '<span class="badge badge-status4 marginleftonly">'.$langs->trans('DoliStockReturnReturnedBadge').'</span>';
+		if ($service->hasAlreadyReturned((int) $object->id, $isSupplier ? 'supplier_credit_note' : 'customer_credit_note')) {
+			print '<span class="badge badge-status4 marginleftonly">'.$langs->trans($isSupplier ? 'DoliStockReturnSupplierReturnedBadge' : 'DoliStockReturnReturnedBadge').'</span>';
 			return 0;
 		}
 		
-		if ($service->isEligibleCreditNote($object)) {
+		if ($isSupplier) {
+			if ($service->isEligibleSupplierCreditNote($object)) {
+				$url = $_SERVER['PHP_SELF'].'?facid='.(int) $object->id.'&action=dolistockreturn_supplier&token='.newToken();
+				print dolGetButtonAction($langs->trans('DoliStockReturnSupplier'), $langs->trans('DoliStockReturnSupplier'), 'default', $url, '', true);
+			}
+		} elseif ($service->isEligibleCreditNote($object)) {
 			$url = $_SERVER['PHP_SELF'].'?facid='.(int) $object->id.'&action=dolistockreturn&token='.newToken();
-			print dolGetButtonAction($langs->trans('DoliStockReturn'), img_picto('', 'stock', 'class="pictofixedwidth"').$langs->trans('DoliStockReturn'), 'default', $url, '', true);
+			print dolGetButtonAction($langs->trans('DoliStockReturn'), $langs->trans('DoliStockReturn'), 'default', $url, '', true);
 		}
 
 		return 0;

@@ -14,6 +14,7 @@
  */
 
 require_once DOL_DOCUMENT_ROOT.'/compta/facture/class/facture.class.php';
+require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/class/product.class.php';
 require_once DOL_DOCUMENT_ROOT.'/product/stock/class/mouvementstock.class.php';
 
@@ -53,11 +54,15 @@ class DoliStockReturnService
 	 * @param int $creditNoteId Credit note id
 	 * @return bool
 	 */
-	public function hasAlreadyReturned($creditNoteId)
+	public function hasAlreadyReturned($creditNoteId, $objectType = 'customer_credit_note')
 	{
+		$this->ensureGenericTraceabilitySchema();
+
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'invoice_supplier' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
-		$sql .= " AND entity IN (".getEntity('invoice').")";
+		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
+		$sql .= " AND entity IN (".getEntity($entityKey).")";
 		$sql .= " LIMIT 1";
 
 		$resql = $this->db->query($sql);
@@ -69,6 +74,10 @@ class DoliStockReturnService
 		$found = (bool) $this->db->fetch_object($resql);
 		$this->db->free($resql);
 
+		if ($objectType === 'supplier_credit_note') {
+			return $found || $this->hasNativeSupplierStockOutputForCreditNote($creditNoteId);
+		}
+
 		return $found || $this->hasNativeStockInputForCreditNote($creditNoteId);
 	}
 
@@ -78,11 +87,15 @@ class DoliStockReturnService
 	 * @param int $creditNoteId Credit note id
 	 * @return int
 	 */
-	public function getReturnIdForCreditNote($creditNoteId)
+	public function getReturnIdForCreditNote($creditNoteId, $objectType = 'customer_credit_note')
 	{
+		$this->ensureGenericTraceabilitySchema();
+
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'invoice_supplier' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
-		$sql .= " AND entity IN (".getEntity('invoice').")";
+		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
+		$sql .= " AND entity IN (".getEntity($entityKey).")";
 		$sql .= " LIMIT 1";
 
 		$resql = $this->db->query($sql);
@@ -229,6 +242,8 @@ class DoliStockReturnService
 	{
 		global $conf, $langs;
 
+		$this->ensureGenericTraceabilitySchema();
+
 		if (!$this->isEligibleCreditNote($creditNote)) {
 			return -1;
 		}
@@ -250,8 +265,8 @@ class DoliStockReturnService
 		$error = 0;
 
 		$sql = "INSERT INTO ".$this->db->prefix()."dolistockreturn_return";
-		$sql .= " (entity, fk_credit_note, fk_source_invoice, fk_entrepot, warehouse_mode, status, date_create, fk_user_create)";
-		$sql .= " VALUES (".((int) $conf->entity).", ".((int) $creditNote->id).", ".((int) $creditNote->fk_facture_source).", ";
+		$sql .= " (entity, object_type, direction, fk_credit_note, fk_source_invoice, fk_entrepot, warehouse_mode, status, date_create, fk_user_create)";
+		$sql .= " VALUES (".((int) $conf->entity).", 'customer_credit_note', 'in', ".((int) $creditNote->id).", ".((int) $creditNote->fk_facture_source).", ";
 		$sql .= ($headerWarehouseId > 0 ? (int) $headerWarehouseId : "null").", '".$this->db->escape($warehouseMode)."', 1, '".$this->db->idate(dol_now())."', ".((int) $user->id).")";
 
 		$resql = $this->db->query($sql);
@@ -295,6 +310,224 @@ class DoliStockReturnService
 			$sql .= " VALUES (".((int) $returnId).", ".((int) $line['credit_line_id']).", ";
 			$sql .= (!empty($line['source_line_id']) ? (int) $line['source_line_id'] : "null").", ";
 			$sql .= $productId.", ".$targetWarehouseId.", ".((float) $line['qty']).", ".((int) $result).", ";
+			$sql .= ((string) $line['batch'] !== '' ? "'".$this->db->escape((string) $line['batch'])."'" : "null").")";
+
+			if (!$this->db->query($sql)) {
+				$error++;
+				$this->setError($this->db->lasterror());
+				break;
+			}
+		}
+
+		if ($error) {
+			$this->db->rollback();
+			return -1;
+		}
+
+		$this->db->commit();
+		return $returnId;
+	}
+
+	/**
+	 * Check if a supplier credit note can generate a stock output.
+	 *
+	 * @param FactureFournisseur $creditNote Supplier credit note
+	 * @return bool
+	 */
+	public function isEligibleSupplierCreditNote($creditNote)
+	{
+		global $langs;
+
+		if (empty($creditNote->id) || $creditNote->type != FactureFournisseur::TYPE_CREDIT_NOTE || $creditNote->status != FactureFournisseur::STATUS_VALIDATED) {
+			$this->setError($langs->trans('DoliStockReturnSupplierNotEligible'));
+			return false;
+		}
+		if (empty($creditNote->fk_facture_source)) {
+			$this->setError($langs->trans('DoliStockReturnSupplierMissingSourceInvoice'));
+			return false;
+		}
+		if ($this->hasAlreadyReturned((int) $creditNote->id, 'supplier_credit_note')) {
+			$this->setError($langs->trans('DoliStockReturnSupplierAlreadyDone'));
+			return false;
+		}
+
+		$source = new FactureFournisseur($this->db);
+		if ($source->fetch((int) $creditNote->fk_facture_source) <= 0) {
+			$this->setError($langs->trans('DoliStockReturnSourceInvoiceNotFound'));
+			return false;
+		}
+
+		$lines = $this->getSupplierReturnableLines($creditNote);
+		if (empty($lines)) {
+			$this->setError($langs->trans('DoliStockReturnNoStockableLine'));
+			return false;
+		}
+
+		if (!$this->supplierLinesMatchSource($creditNote, $source)) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Compare supplier credit note lines with source supplier invoice lines.
+	 *
+	 * @param FactureFournisseur $creditNote Supplier credit note
+	 * @param FactureFournisseur $source Source supplier invoice
+	 * @return bool
+	 */
+	public function supplierLinesMatchSource($creditNote, $source)
+	{
+		global $langs;
+
+		$credit = $this->buildStockableProductQtyMap($creditNote);
+		$origin = $this->buildStockableProductQtyMap($source);
+
+		if (empty($credit) || count($credit) !== count($origin)) {
+			$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+			return false;
+		}
+
+		foreach ($credit as $productId => $qty) {
+			if (!isset($origin[$productId]) || abs((float) $origin[$productId] - (float) $qty) > 0.00001) {
+				$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Get stockable supplier credit note lines.
+	 *
+	 * @param FactureFournisseur $creditNote Supplier credit note
+	 * @return array<int,array<string,mixed>>
+	 */
+	public function getSupplierReturnableLines($creditNote)
+	{
+		global $langs;
+
+		$lines = array();
+		$policy = getDolGlobalString('DOLISTOCKRETURN_NON_STOCKABLE_POLICY', 'ignore');
+
+		foreach ($creditNote->lines as $line) {
+			if (empty($line->fk_product)) {
+				if ($policy === 'block') {
+					$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+					return array();
+				}
+				continue;
+			}
+
+			$product = new Product($this->db);
+			if ($product->fetch((int) $line->fk_product) <= 0) {
+				$this->setError($langs->trans('ErrorRecordNotFound'));
+				return array();
+			}
+
+			if (!$this->isStockableProduct($product)) {
+				if ($policy === 'block') {
+					$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+					return array();
+				}
+				continue;
+			}
+
+			$lines[] = array(
+				'credit_line_id' => (int) $line->id,
+				'source_line_id' => $this->findSupplierSourceLineId((int) $creditNote->fk_facture_source, (int) $line->fk_product, abs((float) $line->qty)),
+				'fk_product' => (int) $line->fk_product,
+				'qty' => abs((float) $line->qty),
+				'price' => abs((float) $line->subprice),
+				'batch' => !empty($line->batch) ? (string) $line->batch : '',
+			);
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * Create supplier stock output and traceability rows.
+	 *
+	 * @param FactureFournisseur $creditNote Supplier credit note
+	 * @param int                $warehouseId Warehouse selected by user, 0 for automatic/default resolution
+	 * @param User               $user User
+	 * @return int Return id or <0
+	 */
+	public function createSupplierStockOutput($creditNote, $warehouseId, $user)
+	{
+		global $conf, $langs;
+
+		$this->ensureGenericTraceabilitySchema();
+
+		if (!$this->isEligibleSupplierCreditNote($creditNote)) {
+			return -1;
+		}
+
+		$lines = $this->getSupplierReturnableLines($creditNote);
+		if (empty($lines)) {
+			return -1;
+		}
+
+		$warehouseMap = $this->resolveSupplierWarehouses($creditNote, $lines, $warehouseId);
+		if (empty($warehouseMap)) {
+			return -1;
+		}
+
+		$warehouseMode = ($warehouseId > 0 ? 'manual' : (getDolGlobalInt('DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE') ? 'source' : 'default'));
+		$headerWarehouseId = $warehouseId > 0 ? $warehouseId : $this->getSingleWarehouseFromMap($warehouseMap);
+
+		$this->db->begin();
+		$error = 0;
+
+		$sql = "INSERT INTO ".$this->db->prefix()."dolistockreturn_return";
+		$sql .= " (entity, object_type, direction, fk_credit_note, fk_source_invoice, fk_entrepot, warehouse_mode, status, date_create, fk_user_create)";
+		$sql .= " VALUES (".((int) $conf->entity).", 'supplier_credit_note', 'out', ".((int) $creditNote->id).", ".((int) $creditNote->fk_facture_source).", ";
+		$sql .= ($headerWarehouseId > 0 ? (int) $headerWarehouseId : "null").", '".$this->db->escape($warehouseMode)."', 1, '".$this->db->idate(dol_now())."', ".((int) $user->id).")";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			$error++;
+			$this->setError($this->db->lasterror());
+		}
+
+		$returnId = 0;
+		if (!$error) {
+			$returnId = (int) $this->db->last_insert_id($this->db->prefix()."dolistockreturn_return");
+		}
+
+		foreach ($lines as $line) {
+			if ($error) {
+				break;
+			}
+
+			$productId = (int) $line['fk_product'];
+			$targetWarehouseId = !empty($warehouseMap[$productId]) ? (int) $warehouseMap[$productId] : 0;
+			if ($targetWarehouseId <= 0) {
+				$error++;
+				$this->setError($langs->trans('DoliStockReturnWarehouseRequired'));
+				break;
+			}
+
+			$movement = new MouvementStock($this->db);
+			$movement->setOrigin($creditNote->element, (int) $creditNote->id);
+			$label = $langs->trans('DoliStockReturnSupplier').' '.$creditNote->ref;
+			$inventoryCode = 'SUPPLIERCREDITNOTE-'.$creditNote->id.'-OUTPUT';
+			$result = $movement->livraison($user, $productId, $targetWarehouseId, (float) $line['qty'], (float) $line['price'], $label, dol_now(), '', '', (string) $line['batch'], 0, $inventoryCode);
+			if ($result < 0) {
+				$error++;
+				$this->errors = array_merge($this->errors, $movement->errors);
+				$this->setError($movement->error ? $movement->error : $langs->trans('Error'));
+				break;
+			}
+
+			$sql = "INSERT INTO ".$this->db->prefix()."dolistockreturn_returndet";
+			$sql .= " (fk_return, fk_credit_note_line, fk_source_invoice_line, fk_product, fk_entrepot, qty, fk_stock_mouvement, batch)";
+			$sql .= " VALUES (".((int) $returnId).", ".((int) $line['credit_line_id']).", ";
+			$sql .= (!empty($line['source_line_id']) ? (int) $line['source_line_id'] : "null").", ";
+			$sql .= $productId.", ".$targetWarehouseId.", ".(0 - (float) $line['qty']).", ".((int) $result).", ";
 			$sql .= ((string) $line['batch'] !== '' ? "'".$this->db->escape((string) $line['batch'])."'" : "null").")";
 
 			if (!$this->db->query($sql)) {
@@ -362,6 +595,59 @@ class DoliStockReturnService
 	}
 
 	/**
+	 * Resolve supplier stock output warehouse per product.
+	 *
+	 * @param FactureFournisseur $creditNote Supplier credit note
+	 * @param array<int,array<string,mixed>> $lines Lines
+	 * @param int $warehouseId Selected warehouse, 0 for automatic/default
+	 * @return array<int,int>
+	 */
+	private function resolveSupplierWarehouses($creditNote, $lines, $warehouseId)
+	{
+		global $langs;
+
+		$map = array();
+		if ($warehouseId > 0) {
+			foreach ($lines as $line) {
+				$map[(int) $line['fk_product']] = (int) $warehouseId;
+			}
+			return $map;
+		}
+
+		if (getDolGlobalInt('DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE')) {
+			$sourceResult = $this->getSupplierSourceWarehouseMap((int) $creditNote->fk_facture_source);
+			$sourceMap = $sourceResult['map'];
+			$sourceOk = true;
+			foreach ($lines as $line) {
+				$productId = (int) $line['fk_product'];
+				if (!empty($sourceResult['ambiguous'][$productId])) {
+					$this->setError($langs->trans('DoliStockReturnSourceWarehouseAmbiguousManualRequired'));
+					return array();
+				}
+				if (empty($sourceMap[$productId])) {
+					$sourceOk = false;
+					break;
+				}
+				$map[$productId] = (int) $sourceMap[$productId];
+			}
+			if ($sourceOk) {
+				return $map;
+			}
+		}
+
+		$defaultWarehouse = (int) getDolGlobalString('DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE');
+		if ($defaultWarehouse > 0) {
+			foreach ($lines as $line) {
+				$map[(int) $line['fk_product']] = $defaultWarehouse;
+			}
+			return $map;
+		}
+
+		$this->setError($langs->trans('DoliStockReturnWarehouseRequired'));
+		return array();
+	}
+
+	/**
 	 * Get warehouse map from original stock output movements.
 	 *
 	 * @param int $sourceInvoiceId Source invoice id
@@ -403,6 +689,74 @@ class DoliStockReturnService
 	}
 
 	/**
+	 * Get supplier source warehouse map from invoice or linked receptions.
+	 *
+	 * @param int $sourceInvoiceId Source supplier invoice id
+	 * @return array{map:array<int,int>,ambiguous:array<int,int>}
+	 */
+	private function getSupplierSourceWarehouseMap($sourceInvoiceId)
+	{
+		$result = array('map' => array(), 'ambiguous' => array());
+
+		$sql = "SELECT fk_product, fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."stock_mouvement";
+		$sql .= " WHERE fk_origin = ".((int) $sourceInvoiceId);
+		$sql .= " AND origintype = 'invoice_supplier'";
+		$sql .= " AND value > 0";
+		$sql .= " AND fk_product IS NOT NULL";
+		$sql .= " GROUP BY fk_product, fk_entrepot";
+
+		$this->accumulateWarehouseRows($sql, $result);
+		if (!empty($result['map']) || !empty($result['ambiguous'])) {
+			return $result;
+		}
+
+		$sql = "SELECT sm.fk_product, sm.fk_entrepot";
+		$sql .= " FROM ".$this->db->prefix()."element_element as ei";
+		$sql .= " INNER JOIN ".$this->db->prefix()."element_element as er ON er.fk_source = ei.fk_source AND er.sourcetype = 'order_supplier' AND er.targettype = 'reception'";
+		$sql .= " INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = er.fk_target AND sm.origintype = 'reception'";
+		$sql .= " WHERE ei.fk_target = ".((int) $sourceInvoiceId);
+		$sql .= " AND ei.sourcetype = 'order_supplier'";
+		$sql .= " AND ei.targettype = 'invoice_supplier'";
+		$sql .= " AND sm.value > 0";
+		$sql .= " AND sm.fk_product IS NOT NULL";
+		$sql .= " GROUP BY sm.fk_product, sm.fk_entrepot";
+
+		$this->accumulateWarehouseRows($sql, $result);
+		return $result;
+	}
+
+	/**
+	 * Accumulate product/warehouse rows and mark product ambiguity.
+	 *
+	 * @param string $sql SQL query returning fk_product, fk_entrepot
+	 * @param array{map:array<int,int>,ambiguous:array<int,int>} $result Result reference
+	 * @return void
+	 */
+	private function accumulateWarehouseRows($sql, &$result)
+	{
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			$this->setError($this->db->lasterror());
+			return;
+		}
+
+		while ($obj = $this->db->fetch_object($resql)) {
+			$productId = (int) $obj->fk_product;
+			if (isset($result['map'][$productId]) && (int) $result['map'][$productId] !== (int) $obj->fk_entrepot) {
+				$result['ambiguous'][$productId] = 1;
+				unset($result['map'][$productId]);
+				continue;
+			}
+			if (empty($result['ambiguous'][$productId])) {
+				$result['map'][$productId] = (int) $obj->fk_entrepot;
+			}
+		}
+
+		$this->db->free($resql);
+	}
+
+	/**
 	 * Check if Dolibarr already created positive stock movements for the credit note.
 	 *
 	 * @param int $creditNoteId Credit note id
@@ -414,6 +768,31 @@ class DoliStockReturnService
 		$sql .= " WHERE fk_origin = ".((int) $creditNoteId);
 		$sql .= " AND origintype = 'facture'";
 		$sql .= " AND value > 0";
+		$sql .= " LIMIT 1";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			return false;
+		}
+
+		$found = (bool) $this->db->fetch_object($resql);
+		$this->db->free($resql);
+
+		return $found;
+	}
+
+	/**
+	 * Check if Dolibarr already created negative stock movements for the supplier credit note.
+	 *
+	 * @param int $creditNoteId Supplier credit note id
+	 * @return bool
+	 */
+	private function hasNativeSupplierStockOutputForCreditNote($creditNoteId)
+	{
+		$sql = "SELECT rowid FROM ".$this->db->prefix()."stock_mouvement";
+		$sql .= " WHERE fk_origin = ".((int) $creditNoteId);
+		$sql .= " AND origintype = 'invoice_supplier'";
+		$sql .= " AND value < 0";
 		$sql .= " LIMIT 1";
 
 		$resql = $this->db->query($sql);
@@ -497,6 +876,33 @@ class DoliStockReturnService
 	}
 
 	/**
+	 * Find a supplier source line id for traceability.
+	 *
+	 * @param int   $sourceInvoiceId Source supplier invoice
+	 * @param int   $productId Product
+	 * @param float $qty Quantity
+	 * @return int
+	 */
+	private function findSupplierSourceLineId($sourceInvoiceId, $productId, $qty)
+	{
+		$sql = "SELECT rowid FROM ".$this->db->prefix()."facture_fourn_det";
+		$sql .= " WHERE fk_facture_fourn = ".((int) $sourceInvoiceId);
+		$sql .= " AND fk_product = ".((int) $productId);
+		$sql .= " AND ABS(qty) = ".((float) $qty);
+		$sql .= " ORDER BY rowid ASC LIMIT 1";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			return 0;
+		}
+
+		$obj = $this->db->fetch_object($resql);
+		$this->db->free($resql);
+
+		return $obj ? (int) $obj->rowid : 0;
+	}
+
+	/**
 	 * Return common warehouse if all lines use the same one.
 	 *
 	 * @param array<int,int> $warehouseMap Warehouse map
@@ -513,6 +919,58 @@ class DoliStockReturnService
 			}
 		}
 		return $warehouseId;
+	}
+
+	/**
+	 * Ensure traceability tables have the generic columns and unique key.
+	 *
+	 * Existing deployments of the first customer-only version did not have
+	 * object_type/direction, so hooks may run before the module is reactivated.
+	 *
+	 * @return void
+	 */
+	private function ensureGenericTraceabilitySchema()
+	{
+		static $done = false;
+		if ($done) {
+			return;
+		}
+
+		$table = $this->db->prefix().'dolistockreturn_return';
+		$resql = $this->db->query("SHOW COLUMNS FROM ".$table." LIKE 'object_type'");
+		if ($resql && !$this->db->num_rows($resql)) {
+			$this->db->query("ALTER TABLE ".$table." ADD COLUMN object_type varchar(32) NOT NULL DEFAULT 'customer_credit_note' AFTER entity");
+		}
+		if ($resql) {
+			$this->db->free($resql);
+		}
+
+		$resql = $this->db->query("SHOW COLUMNS FROM ".$table." LIKE 'direction'");
+		if ($resql && !$this->db->num_rows($resql)) {
+			$this->db->query("ALTER TABLE ".$table." ADD COLUMN direction varchar(8) NOT NULL DEFAULT 'in' AFTER object_type");
+		}
+		if ($resql) {
+			$this->db->free($resql);
+		}
+
+		$needsIndexRebuild = true;
+		$resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = 'uk_dolistockreturn_credit_note'");
+		if ($resql) {
+			$columns = array();
+			while ($obj = $this->db->fetch_object($resql)) {
+				$columns[(int) $obj->Seq_in_index] = $obj->Column_name;
+			}
+			ksort($columns);
+			$needsIndexRebuild = (implode(',', $columns) !== 'object_type,fk_credit_note,entity');
+			$this->db->free($resql);
+		}
+
+		if ($needsIndexRebuild) {
+			$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_dolistockreturn_credit_note");
+			$this->db->query("ALTER TABLE ".$table." ADD UNIQUE KEY uk_dolistockreturn_credit_note (object_type, fk_credit_note, entity)");
+		}
+
+		$done = true;
 	}
 
 	/**

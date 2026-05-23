@@ -126,6 +126,7 @@ $item->nameText = $item->getNameText().' more html text '; */
 /* $item = $formSetup->newItem('DOLISTOCKRETURN_MYPARAM4');
 $item->setAsThirdpartyType(); */
 
+$formSetup->newItem('DOLISTOCKRETURN_CUSTOMER_SECTION')->setAsTitle();
 // Setup conf for a selection of a boolean for dolistockreturn enable button
 $formSetup->newItem('DOLISTOCKRETURN_ENABLE_BUTTON')->setAsYesNo();
 
@@ -139,12 +140,18 @@ $TField = $entrepotList->list_array();
 // Setup conf for a simple combo list
 $formSetup->newItem('DOLISTOCKRETURN_DEFAULT_WAREHOUSE')->setAsSelect($TField);
 
+$formSetup->newItem('DOLISTOCKRETURN_SUPPLIER_SECTION')->setAsTitle();
+$formSetup->newItem('DOLISTOCKRETURN_ENABLE_SUPPLIER_BUTTON')->setAsYesNo();
+$formSetup->newItem('DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE')->setAsYesNo();
+$formSetup->newItem('DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE')->setAsSelect($TField);
+
 // Setup conf for a selection of stockable policy
 $TField = array(
 	'ignore' => $langs->trans('DoliStockReturnIgnore'),
 	'block' => $langs->trans('DoliStockReturnBlock'),
 );
 
+$formSetup->newItem('DOLISTOCKRETURN_POLICY_SECTION')->setAsTitle();
 // Setup conf for a simple combo list for stockable policy
 $formSetup->newItem('DOLISTOCKRETURN_NON_STOCKABLE_POLICY')->setAsSelect($TField);
 // Setup conf for a selection of an Email template of type thirdparty
@@ -366,7 +373,7 @@ echo '<span class="opacitymedium">'.$langs->trans("DolistockreturnSetupPage").'<
  }
  */
 if (!empty($formSetup->items)) {
-	print $formSetup->generateOutput(true);
+	print $formSetup->generateOutput(true, true);
 	print '<br>';
 }
 
