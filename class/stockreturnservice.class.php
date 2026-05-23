@@ -58,7 +58,7 @@ class DoliStockReturnService
 	{
 		$this->ensureGenericTraceabilitySchema();
 
-		$entityKey = ($objectType === 'supplier_credit_note' ? 'facture_fourn' : 'invoice');
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'supplier_invoice' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
 		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
@@ -91,7 +91,7 @@ class DoliStockReturnService
 	{
 		$this->ensureGenericTraceabilitySchema();
 
-		$entityKey = ($objectType === 'supplier_credit_note' ? 'facture_fourn' : 'invoice');
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'supplier_invoice' : 'invoice');
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."dolistockreturn_return";
 		$sql .= " WHERE fk_credit_note = ".((int) $creditNoteId);
 		$sql .= " AND object_type = '".$this->db->escape($objectType)."'";
