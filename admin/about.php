@@ -95,7 +95,7 @@ $backtopage = GETPOST('backtopage', 'alpha');
 $form = new Form($db);
 
 $help_url = '';
-$title = "DolistockreturnSetup";
+$title = "DoliStockReturnSetup";
 
 llxHeader('', $langs->trans($title), $help_url, '', 0, 0, '', '', '', 'mod-dolistockreturn page-admin_about');
 
