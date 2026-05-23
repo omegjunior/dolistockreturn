@@ -145,7 +145,11 @@ class DoliStockReturnService
 			return false;
 		}
 
-		if (!$this->linesMatchSource($creditNote, $source)) {
+		if (getDolGlobalInt('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES')) {
+			if (!$this->linesPartiallyMatchSource($creditNote, $source, 'customer_credit_note')) {
+				return false;
+			}
+		} elseif (!$this->linesMatchSource($creditNote, $source)) {
 			return false;
 		}
 
@@ -174,6 +178,43 @@ class DoliStockReturnService
 		foreach ($credit as $productId => $qty) {
 			if (!isset($origin[$productId]) || abs((float) $origin[$productId] - (float) $qty) > 0.00001) {
 				$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Check that credit note stockable quantities are available on the source invoice.
+	 *
+	 * V1 is product-aggregated: it supports partial quantities without trying to allocate
+	 * them across several identical source lines.
+	 *
+	 * @param Facture|FactureFournisseur $creditNote Credit note
+	 * @param Facture|FactureFournisseur $source Source invoice
+	 * @param string $objectType Traceability object type
+	 * @return bool
+	 */
+	public function linesPartiallyMatchSource($creditNote, $source, $objectType = 'customer_credit_note')
+	{
+		global $langs;
+
+		$credit = $this->buildStockableProductQtyMap($creditNote);
+		$origin = $this->buildStockableProductQtyMap($source);
+		$alreadyReturned = $this->getAlreadyReturnedQuantities((int) $source->id, $objectType);
+
+		if (empty($credit)) {
+			$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+			return false;
+		}
+
+		foreach ($credit as $productId => $qty) {
+			$sourceQty = isset($origin[$productId]) ? (float) $origin[$productId] : 0.0;
+			$alreadyQty = isset($alreadyReturned[$productId]) ? (float) $alreadyReturned[$productId] : 0.0;
+			$availableQty = $sourceQty - $alreadyQty;
+			if ($sourceQty <= 0 || (float) $qty - $availableQty > 0.00001) {
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
 				return false;
 			}
 		}
@@ -363,7 +404,11 @@ class DoliStockReturnService
 			return false;
 		}
 
-		if (!$this->supplierLinesMatchSource($creditNote, $source)) {
+		if (getDolGlobalInt('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES')) {
+			if (!$this->linesPartiallyMatchSource($creditNote, $source, 'supplier_credit_note')) {
+				return false;
+			}
+		} elseif (!$this->supplierLinesMatchSource($creditNote, $source)) {
 			return false;
 		}
 
@@ -790,6 +835,41 @@ class DoliStockReturnService
 	}
 
 	/**
+	 * Get quantities already processed for one source invoice, aggregated by product.
+	 *
+	 * @param int $sourceInvoiceId Source invoice id
+	 * @param string $objectType Traceability object type
+	 * @return array<int,float>
+	 */
+	private function getAlreadyReturnedQuantities($sourceInvoiceId, $objectType)
+	{
+		$map = array();
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'supplier_invoice' : 'invoice');
+
+		$sql = "SELECT d.fk_product, SUM(ABS(d.qty)) as qty";
+		$sql .= " FROM ".$this->db->prefix()."dolistockreturn_returndet as d";
+		$sql .= " INNER JOIN ".$this->db->prefix()."dolistockreturn_return as r ON r.rowid = d.fk_return";
+		$sql .= " WHERE r.fk_source_invoice = ".((int) $sourceInvoiceId);
+		$sql .= " AND r.object_type = '".$this->db->escape($objectType)."'";
+		$sql .= " AND r.status = 1";
+		$sql .= " AND r.entity IN (".getEntity($entityKey).")";
+		$sql .= " GROUP BY d.fk_product";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			$this->setError($this->db->lasterror());
+			return $map;
+		}
+
+		while ($obj = $this->db->fetch_object($resql)) {
+			$map[(int) $obj->fk_product] = (float) $obj->qty;
+		}
+		$this->db->free($resql);
+
+		return $map;
+	}
+
+	/**
 	 * Check if Dolibarr already created positive stock movements for the credit note.
 	 *
 	 * @param int $creditNoteId Credit note id
@@ -894,8 +974,8 @@ class DoliStockReturnService
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."facturedet";
 		$sql .= " WHERE fk_facture = ".((int) $sourceInvoiceId);
 		$sql .= " AND fk_product = ".((int) $productId);
-		$sql .= " AND ABS(qty) = ".((float) $qty);
-		$sql .= " ORDER BY rowid ASC LIMIT 1";
+		$sql .= " AND ABS(qty) >= ".((float) $qty);
+		$sql .= " ORDER BY ABS(ABS(qty) - ".((float) $qty).") ASC, rowid ASC LIMIT 1";
 
 		$resql = $this->db->query($sql);
 		if (!$resql) {
@@ -921,8 +1001,8 @@ class DoliStockReturnService
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."facture_fourn_det";
 		$sql .= " WHERE fk_facture_fourn = ".((int) $sourceInvoiceId);
 		$sql .= " AND fk_product = ".((int) $productId);
-		$sql .= " AND ABS(qty) = ".((float) $qty);
-		$sql .= " ORDER BY rowid ASC LIMIT 1";
+		$sql .= " AND ABS(qty) >= ".((float) $qty);
+		$sql .= " ORDER BY ABS(ABS(qty) - ".((float) $qty).") ASC, rowid ASC LIMIT 1";
 
 		$resql = $this->db->query($sql);
 		if (!$resql) {

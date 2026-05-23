@@ -154,6 +154,7 @@ $TField = array(
 $formSetup->newItem('DOLISTOCKRETURN_POLICY_SECTION')->setAsTitle();
 // Setup conf for a simple combo list for stockable policy
 $formSetup->newItem('DOLISTOCKRETURN_NON_STOCKABLE_POLICY')->setAsSelect($TField);
+$formSetup->newItem('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES')->setAsYesNo();
 // Setup conf for a selection of an Email template of type thirdparty
 /* $formSetup->newItem('DOLISTOCKRETURN_MYPARAM6')->setAsEmailTemplate('thirdparty'); */
 

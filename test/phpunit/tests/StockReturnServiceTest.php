@@ -54,6 +54,7 @@ class StockReturnServiceTest extends CommonClassTest
 		$conf->global->DOLISTOCKRETURN_DEFAULT_WAREHOUSE = 0;
 		$conf->global->DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE = 0;
 		$conf->global->DOLISTOCKRETURN_NON_STOCKABLE_POLICY = 'ignore';
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 0;
 		$conf->global->STOCK_DISALLOW_NEGATIVE_TRANSFER = 0;
 		if (!is_object($mysoc)) {
 			$mysoc = (object) array(
@@ -120,6 +121,33 @@ class StockReturnServiceTest extends CommonClassTest
 		$this->assertFalse($this->service->linesMatchSource($creditNote, $source));
 		$this->assertFalse($this->service->isEligibleCreditNote($creditNote));
 		$this->assertNotEmpty($this->service->error);
+	}
+
+	public function testCustomerPartialCreditNotesAreAcceptedWhenOptionIsEnabled()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('CUSTPARTIAL');
+		$warehouseId = $this->createWarehouse('WH-CUSTPARTIAL');
+		$source = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_STANDARD, 0, $productId, 10));
+		$this->insertStockMovement($source->id, 'facture', $productId, $warehouseId, -10);
+
+		$creditNoteA = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_CREDIT_NOTE, $source->id, $productId, -4));
+		$this->assertTrue($this->service->isEligibleCreditNote($creditNoteA), $this->service->error);
+		$returnIdA = $this->service->createStockReturn($creditNoteA, 0, $this->user);
+		$this->assertGreaterThan(0, $returnIdA, $this->service->error);
+		$this->assertReturnDetail($returnIdA, $productId, $warehouseId, 4.0);
+
+		$creditNoteB = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_CREDIT_NOTE, $source->id, $productId, -6));
+		$this->assertTrue($this->service->isEligibleCreditNote($creditNoteB), $this->service->error);
+		$returnIdB = $this->service->createStockReturn($creditNoteB, 0, $this->user);
+		$this->assertGreaterThan(0, $returnIdB, $this->service->error);
+		$this->assertReturnDetail($returnIdB, $productId, $warehouseId, 6.0);
+
+		$creditNoteC = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_CREDIT_NOTE, $source->id, $productId, -1));
+		$this->assertFalse($this->service->isEligibleCreditNote($creditNoteC));
+		$this->assertStringContainsString('disponibles', strtolower($this->service->error));
 	}
 
 	public function testCustomerCreditNoteUsesLinkedOrderWarehouse()
@@ -223,6 +251,34 @@ class StockReturnServiceTest extends CommonClassTest
 		$this->assertFalse($this->service->supplierLinesMatchSource($creditNote, $source));
 		$this->assertFalse($this->service->isEligibleSupplierCreditNote($creditNote));
 		$this->assertNotEmpty($this->service->error);
+	}
+
+	public function testSupplierPartialCreditNotesAreAcceptedWhenOptionIsEnabled()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('SUPPARTIAL');
+		$warehouseId = $this->createWarehouse('WH-SUPPARTIAL');
+		$source = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_STANDARD, 0, $productId, 10));
+		$this->insertStockMovement($source->id, 'invoice_supplier', $productId, $warehouseId, 10);
+		$this->insertStockMovement(920001, 'test_seed', $productId, $warehouseId, 12);
+
+		$creditNoteA = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, $productId, -4));
+		$this->assertTrue($this->service->isEligibleSupplierCreditNote($creditNoteA), $this->service->error);
+		$returnIdA = $this->service->createSupplierStockOutput($creditNoteA, 0, $this->user);
+		$this->assertGreaterThan(0, $returnIdA, $this->service->error);
+		$this->assertReturnDetail($returnIdA, $productId, $warehouseId, -4.0);
+
+		$creditNoteB = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, $productId, -6));
+		$this->assertTrue($this->service->isEligibleSupplierCreditNote($creditNoteB), $this->service->error);
+		$returnIdB = $this->service->createSupplierStockOutput($creditNoteB, 0, $this->user);
+		$this->assertGreaterThan(0, $returnIdB, $this->service->error);
+		$this->assertReturnDetail($returnIdB, $productId, $warehouseId, -6.0);
+
+		$creditNoteC = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, $productId, -1));
+		$this->assertFalse($this->service->isEligibleSupplierCreditNote($creditNoteC));
+		$this->assertStringContainsString('disponibles', strtolower($this->service->error));
 	}
 
 	public function testSupplierCreditNoteUsesLinkedSupplierOrderWarehouse()
