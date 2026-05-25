@@ -545,11 +545,13 @@ class ActionsDolistockreturn extends CommonHookActions
 	{
 		global $db, $langs, $user;
 		
+		//Si on est en dehors des contextes facture ou facture fournisseur, ou que l'action n'est pas celle de retour de stock, on ne fait rien
+		// il faut aussi que le statut de la facture avoir (2) soit celui de facture avoir validée et non brouillon pour que le bouton puisse s'afficher
 		if (!in_array($parameters['currentcontext'], array('invoicecard', 'invoicesuppliercard'))) {		// do something only for the context 'somecontext1' or 'somecontext2'
 			return 0;
 		}
 
-		if ($object->type != 2) { // si ce n'est pas une facture d'avoir, on ne fait rien
+		if ($object->type != 2 || $object->statut == 0) { // si ce n'est pas une facture d'avoir ou si elle est en brouillon, on ne fait rien
 			return 0;
 		}
 

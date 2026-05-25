@@ -145,7 +145,11 @@ class DoliStockReturnService
 			return false;
 		}
 
-		if (!$this->linesMatchSource($creditNote, $source)) {
+		if (getDolGlobalInt('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES')) {
+			if (!$this->linesPartiallyMatchSource($creditNote, $source, 'customer_credit_note')) {
+				return false;
+			}
+		} elseif (!$this->linesMatchSource($creditNote, $source)) {
 			return false;
 		}
 
@@ -174,6 +178,43 @@ class DoliStockReturnService
 		foreach ($credit as $productId => $qty) {
 			if (!isset($origin[$productId]) || abs((float) $origin[$productId] - (float) $qty) > 0.00001) {
 				$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Check that credit note stockable quantities are available on the source invoice.
+	 *
+	 * V1 is product-aggregated: it supports partial quantities without trying to allocate
+	 * them across several identical source lines.
+	 *
+	 * @param Facture|FactureFournisseur $creditNote Credit note
+	 * @param Facture|FactureFournisseur $source Source invoice
+	 * @param string $objectType Traceability object type
+	 * @return bool
+	 */
+	public function linesPartiallyMatchSource($creditNote, $source, $objectType = 'customer_credit_note')
+	{
+		global $langs;
+
+		$credit = $this->buildStockableProductQtyMap($creditNote);
+		$origin = $this->buildStockableProductQtyMap($source);
+		$alreadyReturned = $this->getAlreadyReturnedQuantities((int) $source->id, $objectType);
+
+		if (empty($credit)) {
+			$this->setError($langs->trans('DoliStockReturnLineMismatch'));
+			return false;
+		}
+
+		foreach ($credit as $productId => $qty) {
+			$sourceQty = isset($origin[$productId]) ? (float) $origin[$productId] : 0.0;
+			$alreadyQty = isset($alreadyReturned[$productId]) ? (float) $alreadyReturned[$productId] : 0.0;
+			$availableQty = $sourceQty - $alreadyQty;
+			if ($sourceQty <= 0 || (float) $qty - $availableQty > 0.00001) {
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
 				return false;
 			}
 		}
@@ -221,6 +262,8 @@ class DoliStockReturnService
 				'credit_line_id' => (int) $line->id,
 				'source_line_id' => $this->findSourceLineId((int) $creditNote->fk_facture_source, (int) $line->fk_product, abs((float) $line->qty)),
 				'fk_product' => (int) $line->fk_product,
+				'product_ref' => (string) $product->ref,
+				'requires_batch' => (int) $product->hasbatch(),
 				'qty' => abs((float) $line->qty),
 				'price' => abs((float) $line->subprice),
 				'batch' => !empty($line->batch) ? (string) $line->batch : '',
@@ -297,7 +340,12 @@ class DoliStockReturnService
 			$movement->setOrigin($creditNote->element, (int) $creditNote->id);
 			$label = $langs->trans('DoliStockReturn').' '.$creditNote->ref;
 			$inventoryCode = 'CREDITNOTE-'.$creditNote->id.'-RETURN';
-			$result = $movement->reception($user, $productId, $targetWarehouseId, (float) $line['qty'], (float) $line['price'], $label, '', '', (string) $line['batch'], dol_now(), 0, $inventoryCode);
+			$batch = $this->resolveBatchForLine((int) $creditNote->fk_facture_source, $line, $targetWarehouseId, 'customer_credit_note');
+			if ($batch === false) {
+				$error++;
+				break;
+			}
+			$result = $movement->reception($user, $productId, $targetWarehouseId, (float) $line['qty'], (float) $line['price'], $label, '', '', (string) $batch, dol_now(), 0, $inventoryCode);
 			if ($result < 0) {
 				$error++;
 				$this->errors = array_merge($this->errors, $movement->errors);
@@ -310,7 +358,7 @@ class DoliStockReturnService
 			$sql .= " VALUES (".((int) $returnId).", ".((int) $line['credit_line_id']).", ";
 			$sql .= (!empty($line['source_line_id']) ? (int) $line['source_line_id'] : "null").", ";
 			$sql .= $productId.", ".$targetWarehouseId.", ".((float) $line['qty']).", ".((int) $result).", ";
-			$sql .= ((string) $line['batch'] !== '' ? "'".$this->db->escape((string) $line['batch'])."'" : "null").")";
+			$sql .= ((string) $batch !== '' ? "'".$this->db->escape((string) $batch)."'" : "null").")";
 
 			if (!$this->db->query($sql)) {
 				$error++;
@@ -363,7 +411,11 @@ class DoliStockReturnService
 			return false;
 		}
 
-		if (!$this->supplierLinesMatchSource($creditNote, $source)) {
+		if (getDolGlobalInt('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES')) {
+			if (!$this->linesPartiallyMatchSource($creditNote, $source, 'supplier_credit_note')) {
+				return false;
+			}
+		} elseif (!$this->supplierLinesMatchSource($creditNote, $source)) {
 			return false;
 		}
 
@@ -439,6 +491,8 @@ class DoliStockReturnService
 				'credit_line_id' => (int) $line->id,
 				'source_line_id' => $this->findSupplierSourceLineId((int) $creditNote->fk_facture_source, (int) $line->fk_product, abs((float) $line->qty)),
 				'fk_product' => (int) $line->fk_product,
+				'product_ref' => (string) $product->ref,
+				'requires_batch' => (int) $product->hasbatch(),
 				'qty' => abs((float) $line->qty),
 				'price' => abs((float) $line->subprice),
 				'batch' => !empty($line->batch) ? (string) $line->batch : '',
@@ -515,7 +569,12 @@ class DoliStockReturnService
 			$movement->setOrigin($creditNote->element, (int) $creditNote->id);
 			$label = $langs->trans('DoliStockReturnSupplier').' '.$creditNote->ref;
 			$inventoryCode = 'SUPPLIERCREDITNOTE-'.$creditNote->id.'-OUTPUT';
-			$result = $movement->livraison($user, $productId, $targetWarehouseId, (float) $line['qty'], (float) $line['price'], $label, dol_now(), '', '', (string) $line['batch'], 0, $inventoryCode);
+			$batch = $this->resolveBatchForLine((int) $creditNote->fk_facture_source, $line, $targetWarehouseId, 'supplier_credit_note');
+			if ($batch === false) {
+				$error++;
+				break;
+			}
+			$result = $movement->livraison($user, $productId, $targetWarehouseId, (float) $line['qty'], (float) $line['price'], $label, dol_now(), '', '', (string) $batch, 0, $inventoryCode);
 			if ($result < 0) {
 				$error++;
 				$this->errors = array_merge($this->errors, $movement->errors);
@@ -528,7 +587,7 @@ class DoliStockReturnService
 			$sql .= " VALUES (".((int) $returnId).", ".((int) $line['credit_line_id']).", ";
 			$sql .= (!empty($line['source_line_id']) ? (int) $line['source_line_id'] : "null").", ";
 			$sql .= $productId.", ".$targetWarehouseId.", ".(0 - (float) $line['qty']).", ".((int) $result).", ";
-			$sql .= ((string) $line['batch'] !== '' ? "'".$this->db->escape((string) $line['batch'])."'" : "null").")";
+			$sql .= ((string) $batch !== '' ? "'".$this->db->escape((string) $batch)."'" : "null").")";
 
 			if (!$this->db->query($sql)) {
 				$error++;
@@ -790,6 +849,207 @@ class DoliStockReturnService
 	}
 
 	/**
+	 * Resolve batch to use for a stock movement line.
+	 *
+	 * V1 intentionally supports only a single non-ambiguous source batch able
+	 * to cover the whole credit note line quantity.
+	 *
+	 * @param int $sourceInvoiceId Source invoice id
+	 * @param array<string,mixed> $line Returnable line
+	 * @param int $warehouseId Warehouse id used for the movement
+	 * @param string $objectType Traceability object type
+	 * @return string|false Batch string, empty string for products without batch, false on error
+	 */
+	private function resolveBatchForLine($sourceInvoiceId, $line, $warehouseId, $objectType)
+	{
+		global $langs;
+
+		if (empty($line['requires_batch'])) {
+			return (string) $line['batch'];
+		}
+
+		$batchRows = $this->getSourceBatchRows($sourceInvoiceId, (int) $line['fk_product'], $warehouseId, $objectType);
+		if (empty($batchRows)) {
+			$this->setError($langs->trans('DoliStockReturnBatchRequired', (string) $line['product_ref']));
+			return false;
+		}
+
+		if (count($batchRows) > 1) {
+			$this->setError($langs->trans('DoliStockReturnBatchAmbiguous', (string) $line['product_ref']));
+			return false;
+		}
+
+		$batch = '';
+		foreach ($batchRows as $batchKey => $qty) {
+			$batch = (string) $batchKey;
+			break;
+		}
+		$availableQty = (float) $batchRows[$batch];
+		if ((float) $line['qty'] - $availableQty > 0.00001) {
+			$this->setError($langs->trans('DoliStockReturnBatchInsufficient', $batch, (string) $line['product_ref']));
+			return false;
+		}
+
+		return $batch;
+	}
+
+	/**
+	 * Get source batch quantities for one source invoice/product/warehouse.
+	 *
+	 * @param int $sourceInvoiceId Source invoice id
+	 * @param int $productId Product id
+	 * @param int $warehouseId Warehouse id
+	 * @param string $objectType Traceability object type
+	 * @return array<string,float>
+	 */
+	private function getSourceBatchRows($sourceInvoiceId, $productId, $warehouseId, $objectType)
+	{
+		$result = array();
+		$operator = ($objectType === 'supplier_credit_note' ? '>' : '<');
+		$queries = array();
+
+		if ($objectType === 'supplier_credit_note') {
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."stock_mouvement as sm
+				WHERE sm.fk_origin = ".((int) $sourceInvoiceId)."
+				AND sm.origintype = 'invoice_supplier'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."element_element as ei
+				INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'order_supplier'
+				WHERE ei.fk_target = ".((int) $sourceInvoiceId)."
+				AND ei.sourcetype = 'order_supplier'
+				AND ei.targettype = 'invoice_supplier'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."element_element as ei
+				INNER JOIN ".$this->db->prefix()."element_element as er ON er.fk_source = ei.fk_source AND er.sourcetype = 'order_supplier' AND er.targettype = 'reception'
+				INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = er.fk_target AND sm.origintype = 'reception'
+				WHERE ei.fk_target = ".((int) $sourceInvoiceId)."
+				AND ei.sourcetype = 'order_supplier'
+				AND ei.targettype = 'invoice_supplier'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+		} else {
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."stock_mouvement as sm
+				WHERE sm.fk_origin = ".((int) $sourceInvoiceId)."
+				AND sm.origintype = 'facture'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."element_element as ei
+				INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'commande'
+				WHERE ei.fk_target = ".((int) $sourceInvoiceId)."
+				AND ei.sourcetype = 'commande'
+				AND ei.targettype = 'facture'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."element_element as ei
+				INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = ei.fk_source AND sm.origintype = 'shipping'
+				WHERE ei.fk_target = ".((int) $sourceInvoiceId)."
+				AND ei.sourcetype = 'shipping'
+				AND ei.targettype = 'facture'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+
+			$queries[] = "SELECT sm.batch, SUM(ABS(sm.value)) as qty
+				FROM ".$this->db->prefix()."element_element as ei
+				INNER JOIN ".$this->db->prefix()."element_element as es ON es.fk_source = ei.fk_source AND es.sourcetype = 'commande' AND es.targettype = 'shipping'
+				INNER JOIN ".$this->db->prefix()."stock_mouvement as sm ON sm.fk_origin = es.fk_target AND sm.origintype = 'shipping'
+				WHERE ei.fk_target = ".((int) $sourceInvoiceId)."
+				AND ei.sourcetype = 'commande'
+				AND ei.targettype = 'facture'
+				AND sm.value ".$operator." 0
+				AND sm.fk_product = ".((int) $productId)."
+				AND sm.fk_entrepot = ".((int) $warehouseId)."
+				AND sm.batch IS NOT NULL AND sm.batch <> ''
+				GROUP BY sm.batch";
+		}
+
+		foreach ($queries as $sql) {
+			$resql = $this->db->query($sql);
+			if (!$resql) {
+				$this->setError($this->db->lasterror());
+				return array();
+			}
+			while ($obj = $this->db->fetch_object($resql)) {
+				$batch = (string) $obj->batch;
+				if ($batch === '') {
+					continue;
+				}
+				if (!isset($result[$batch])) {
+					$result[$batch] = 0.0;
+				}
+				$result[$batch] += (float) $obj->qty;
+			}
+			$this->db->free($resql);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Get quantities already processed for one source invoice, aggregated by product.
+	 *
+	 * @param int $sourceInvoiceId Source invoice id
+	 * @param string $objectType Traceability object type
+	 * @return array<int,float>
+	 */
+	private function getAlreadyReturnedQuantities($sourceInvoiceId, $objectType)
+	{
+		$map = array();
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'supplier_invoice' : 'invoice');
+
+		$sql = "SELECT d.fk_product, SUM(ABS(d.qty)) as qty";
+		$sql .= " FROM ".$this->db->prefix()."dolistockreturn_returndet as d";
+		$sql .= " INNER JOIN ".$this->db->prefix()."dolistockreturn_return as r ON r.rowid = d.fk_return";
+		$sql .= " WHERE r.fk_source_invoice = ".((int) $sourceInvoiceId);
+		$sql .= " AND r.object_type = '".$this->db->escape($objectType)."'";
+		$sql .= " AND r.status = 1";
+		$sql .= " AND r.entity IN (".getEntity($entityKey).")";
+		$sql .= " GROUP BY d.fk_product";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			$this->setError($this->db->lasterror());
+			return $map;
+		}
+
+		while ($obj = $this->db->fetch_object($resql)) {
+			$map[(int) $obj->fk_product] = (float) $obj->qty;
+		}
+		$this->db->free($resql);
+
+		return $map;
+	}
+
+	/**
 	 * Check if Dolibarr already created positive stock movements for the credit note.
 	 *
 	 * @param int $creditNoteId Credit note id
@@ -894,8 +1154,8 @@ class DoliStockReturnService
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."facturedet";
 		$sql .= " WHERE fk_facture = ".((int) $sourceInvoiceId);
 		$sql .= " AND fk_product = ".((int) $productId);
-		$sql .= " AND ABS(qty) = ".((float) $qty);
-		$sql .= " ORDER BY rowid ASC LIMIT 1";
+		$sql .= " AND ABS(qty) >= ".((float) $qty);
+		$sql .= " ORDER BY ABS(ABS(qty) - ".((float) $qty).") ASC, rowid ASC LIMIT 1";
 
 		$resql = $this->db->query($sql);
 		if (!$resql) {
@@ -921,8 +1181,8 @@ class DoliStockReturnService
 		$sql = "SELECT rowid FROM ".$this->db->prefix()."facture_fourn_det";
 		$sql .= " WHERE fk_facture_fourn = ".((int) $sourceInvoiceId);
 		$sql .= " AND fk_product = ".((int) $productId);
-		$sql .= " AND ABS(qty) = ".((float) $qty);
-		$sql .= " ORDER BY rowid ASC LIMIT 1";
+		$sql .= " AND ABS(qty) >= ".((float) $qty);
+		$sql .= " ORDER BY ABS(ABS(qty) - ".((float) $qty).") ASC, rowid ASC LIMIT 1";
 
 		$resql = $this->db->query($sql);
 		if (!$resql) {

@@ -181,6 +181,7 @@ class modDolistockreturn extends DolibarrModules
 			5 => array('DOLISTOCKRETURN_ENABLE_SUPPLIER_BUTTON', 'chaine', '1', 'Show supplier stock output button on eligible supplier credit notes', 0, 'current', 1),
 			6 => array('DOLISTOCKRETURN_SUPPLIER_USE_SOURCE_WAREHOUSE', 'chaine', '1', 'Use source supplier stock movement warehouse when possible', 0, 'current', 1),
 			7 => array('DOLISTOCKRETURN_SUPPLIER_DEFAULT_WAREHOUSE', 'chaine', '', 'Default warehouse for supplier credit note stock outputs', 0, 'current', 1),
+			8 => array('DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES', 'chaine', '0', 'Allow partial customer and supplier credit notes', 0, 'current', 1),
 		);
 
 		// Some keys to add into the overwriting translation tables
