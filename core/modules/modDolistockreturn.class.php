@@ -306,17 +306,17 @@ class modDolistockreturn extends DolibarrModules
 		
 		$o = 1;
 		$this->rights[$r][0] = $this->numero . sprintf("%02d", ($o * 10) + 1); // Permission id (must not be already used)
-		$this->rights[$r][1] = 'Read stock returns from credit notes'; // Permission label
+		$this->rights[$r][1] = 'Lire les retours de stock à partir des avoirs'; // Permission label
 		$this->rights[$r][4] = 'return';
 		$this->rights[$r][5] = 'read'; // In php code, permission will be checked by test if ($user->hasRight('dolistockreturn', 'myobject', 'read'))
 		$r++;
 		$this->rights[$r][0] = $this->numero . sprintf("%02d", ($o * 10) + 2); // Permission id (must not be already used)
-		$this->rights[$r][1] = 'Create stock returns from credit notes'; // Permission label
+		$this->rights[$r][1] = 'Créer des retours de stock à partir des avoirs'; // Permission label
 		$this->rights[$r][4] = 'return';
 		$this->rights[$r][5] = 'write'; // In php code, permission will be checked by test if ($user->hasRight('dolistockreturn', 'myobject', 'write'))
 		$r++;
 		$this->rights[$r][0] = $this->numero . sprintf("%02d", ($o * 10) + 3); // Permission id (must not be already used)
-		$this->rights[$r][1] = 'Configure stock returns from credit notes'; // Permission label
+		$this->rights[$r][1] = 'Configurer les retours de stock à partir des avoirs'; // Permission label
 		$this->rights[$r][4] = 'admin';
 		$this->rights[$r][5] = 'write'; // In php code, permission will be checked by test if ($user->hasRight('dolistockreturn', 'myobject', 'delete'))
 		$r++;
