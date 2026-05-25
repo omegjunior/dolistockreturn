@@ -19,9 +19,7 @@
 /**
  * \file    dolistockreturn/class/actions_dolistockreturn.class.php
  * \ingroup dolistockreturn
- * \brief   Example hook overload.
- *
- * TODO: Write detailed description here.
+ * \brief   Hook handlers for credit note stock return and supplier stock output actions.
  */
 
 require_once DOL_DOCUMENT_ROOT.'/core/class/commonhookactions.class.php';

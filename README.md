@@ -2,7 +2,9 @@
 
 ## Features
 
-Description of the module...
+DoliStockReturn manages stock movements from credit notes linked to customer or supplier invoices.
+
+For maintainers, see [TECHNICAL.md](TECHNICAL.md).
 
 <!--
 ![Screenshot dolistockreturn](img/screenshot_dolistockreturn.png?raw=true "Dolistockreturn"){imgmd}
