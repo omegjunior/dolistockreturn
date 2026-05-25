@@ -43,4 +43,7 @@ DoliStockReturnSupplierMissingSourceInvoice=L'avoir fournisseur n'est pas lie a 
 DoliStockReturnSupplierDone=Sortie de stock fournisseur créée avec succes.
 DoliStockReturnSupplierReturnedBadge=Sortie de stock fournisseur effectuée
 DoliStockReturnSourceWarehouseAmbiguousManualRequired=Plusieurs entrepots d'origine ont été trouvés pour au moins un produit. Veuillez choisir manuellement l'entrepot.
+DoliStockReturnBatchRequired=Le produit %s exige un lot ou numero de serie, mais aucun lot source exploitable n'a été trouvé.
+DoliStockReturnBatchAmbiguous=Le produit %s exige un lot ou numero de serie et plusieurs lots source sont possibles. Veuillez traiter ce cas manuellement ou créer un avoir par lot.
+DoliStockReturnBatchInsufficient=Le lot source %s du produit %s ne couvre pas la quantité de l'avoir.
 DolistockreturnSetupPage=Page de configuration du module de gestion des retours en stock
