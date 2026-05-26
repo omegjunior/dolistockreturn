@@ -545,11 +545,13 @@ class ActionsDolistockreturn extends CommonHookActions
 		
 		//Si on est en dehors des contextes facture ou facture fournisseur, ou que l'action n'est pas celle de retour de stock, on ne fait rien
 		// il faut aussi que le statut de la facture avoir (2) soit celui de facture avoir validée et non brouillon pour que le bouton puisse s'afficher
+		// on ne doit pas non utiliser la fonction retour stock (donc pas de bouton) si la facture d'avoir a été générée sur TakePoS,.... 
+		// ... car dans ce cas le stock a déjà été réintégré ou sorti lors de la validation de la facture d'avoir
 		if (!in_array($parameters['currentcontext'], array('invoicecard', 'invoicesuppliercard'))) {		// do something only for the context 'somecontext1' or 'somecontext2'
 			return 0;
 		}
 
-		if ($object->type != 2 || $object->statut == 0) { // si ce n'est pas une facture d'avoir ou si elle est en brouillon, on ne fait rien
+		if ($object->type != 2 || $object->statut == 0 || $object->module_source == 'takepos') { // si ce n'est pas une facture d'avoir ou si elle est en brouillon, ou si ça a été généré sur TakePOS, on ne fait rien
 			return 0;
 		}
 
