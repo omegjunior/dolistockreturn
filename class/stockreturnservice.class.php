@@ -214,7 +214,7 @@ class DoliStockReturnService
 			$alreadyQty = isset($alreadyReturned[$productId]) ? (float) $alreadyReturned[$productId] : 0.0;
 			$availableQty = $sourceQty - $alreadyQty;
 			if ($sourceQty <= 0 || (float) $qty - $availableQty > 0.00001) {
-				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable', $this->getProductRefForError((int) $productId)));
 				return false;
 			}
 		}
@@ -1217,7 +1217,7 @@ class DoliStockReturnService
 			}
 
 			if (empty($sourceLinesByProduct[$productId])) {
-				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable', (string) $product->ref));
 				return array();
 			}
 
@@ -1246,7 +1246,7 @@ class DoliStockReturnService
 			}
 
 			if ($remainingQty > $epsilon) {
-				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable', (string) $product->ref));
 				return array();
 			}
 		}
@@ -1331,6 +1331,22 @@ class DoliStockReturnService
 		$this->db->free($resql);
 
 		return $map;
+	}
+
+	/**
+	 * Get product reference for user-facing errors.
+	 *
+	 * @param int $productId Product id
+	 * @return string
+	 */
+	private function getProductRefForError($productId)
+	{
+		$product = new Product($this->db);
+		if ($product->fetch((int) $productId) > 0 && (string) $product->ref !== '') {
+			return (string) $product->ref;
+		}
+
+		return '#'.((int) $productId);
 	}
 
 	/**
