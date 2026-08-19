@@ -188,8 +188,8 @@ class DoliStockReturnService
 	/**
 	 * Check that credit note stockable quantities are available on the source invoice.
 	 *
-	 * V1 is product-aggregated: it supports partial quantities without trying to allocate
-	 * them across several identical source lines.
+	 * Quantities are validated at product level. Returnable lines are later
+	 * allocated to source lines for traceability.
 	 *
 	 * @param Facture|FactureFournisseur $creditNote Credit note
 	 * @param Facture|FactureFournisseur $source Source invoice
@@ -232,6 +232,16 @@ class DoliStockReturnService
 	{
 		global $langs;
 
+		$source = null;
+		if (!empty($creditNote->fk_facture_source)) {
+			$source = new Facture($this->db);
+			if ($source->fetch((int) $creditNote->fk_facture_source) > 0) {
+				$source->fetch_lines();
+			} else {
+				$source = null;
+			}
+		}
+		$allocations = ($source ? $this->allocateCreditLinesOnSourceLines($creditNote, $source, 'customer_credit_note') : array());
 		$lines = array();
 		$policy = getDolGlobalString('DOLISTOCKRETURN_NON_STOCKABLE_POLICY', 'ignore');
 
@@ -258,16 +268,27 @@ class DoliStockReturnService
 				continue;
 			}
 
-			$lines[] = array(
-				'credit_line_id' => (int) $line->id,
+			$creditLineId = (int) $line->id;
+			if ($source && empty($allocations[$creditLineId])) {
+				return array();
+			}
+			$lineAllocations = !empty($allocations[$creditLineId]) ? $allocations[$creditLineId] : array(array(
 				'source_line_id' => $this->findSourceLineId((int) $creditNote->fk_facture_source, (int) $line->fk_product, abs((float) $line->qty)),
-				'fk_product' => (int) $line->fk_product,
-				'product_ref' => (string) $product->ref,
-				'requires_batch' => (int) $product->hasbatch(),
 				'qty' => abs((float) $line->qty),
-				'price' => abs((float) $line->subprice),
-				'batch' => !empty($line->batch) ? (string) $line->batch : '',
-			);
+			));
+
+			foreach ($lineAllocations as $allocation) {
+				$lines[] = array(
+					'credit_line_id' => $creditLineId,
+					'source_line_id' => (int) $allocation['source_line_id'],
+					'fk_product' => (int) $line->fk_product,
+					'product_ref' => (string) $product->ref,
+					'requires_batch' => (int) $product->hasbatch(),
+					'qty' => abs((float) $allocation['qty']),
+					'price' => abs((float) $line->subprice),
+					'batch' => !empty($line->batch) ? (string) $line->batch : '',
+				);
+			}
 		}
 
 		return $lines;
@@ -461,6 +482,16 @@ class DoliStockReturnService
 	{
 		global $langs;
 
+		$source = null;
+		if (!empty($creditNote->fk_facture_source)) {
+			$source = new FactureFournisseur($this->db);
+			if ($source->fetch((int) $creditNote->fk_facture_source) > 0) {
+				$source->fetch_lines();
+			} else {
+				$source = null;
+			}
+		}
+		$allocations = ($source ? $this->allocateCreditLinesOnSourceLines($creditNote, $source, 'supplier_credit_note') : array());
 		$lines = array();
 		$policy = getDolGlobalString('DOLISTOCKRETURN_NON_STOCKABLE_POLICY', 'ignore');
 
@@ -487,16 +518,27 @@ class DoliStockReturnService
 				continue;
 			}
 
-			$lines[] = array(
-				'credit_line_id' => (int) $line->id,
+			$creditLineId = (int) $line->id;
+			if ($source && empty($allocations[$creditLineId])) {
+				return array();
+			}
+			$lineAllocations = !empty($allocations[$creditLineId]) ? $allocations[$creditLineId] : array(array(
 				'source_line_id' => $this->findSupplierSourceLineId((int) $creditNote->fk_facture_source, (int) $line->fk_product, abs((float) $line->qty)),
-				'fk_product' => (int) $line->fk_product,
-				'product_ref' => (string) $product->ref,
-				'requires_batch' => (int) $product->hasbatch(),
 				'qty' => abs((float) $line->qty),
-				'price' => abs((float) $line->subprice),
-				'batch' => !empty($line->batch) ? (string) $line->batch : '',
-			);
+			));
+
+			foreach ($lineAllocations as $allocation) {
+				$lines[] = array(
+					'credit_line_id' => $creditLineId,
+					'source_line_id' => (int) $allocation['source_line_id'],
+					'fk_product' => (int) $line->fk_product,
+					'product_ref' => (string) $product->ref,
+					'requires_batch' => (int) $product->hasbatch(),
+					'qty' => abs((float) $allocation['qty']),
+					'price' => abs((float) $line->subprice),
+					'batch' => !empty($line->batch) ? (string) $line->batch : '',
+				);
+			}
 		}
 
 		return $lines;
@@ -1126,6 +1168,168 @@ class DoliStockReturnService
 		}
 
 		ksort($map);
+		return $map;
+	}
+
+	/**
+	 * Allocate stockable credit note lines to source invoice lines.
+	 *
+	 * Allocation is FIFO per product and supports both granularities:
+	 * one credit line can be split across several source lines, and several
+	 * credit lines can consume the same source line until its quantity is used.
+	 *
+	 * @param Facture|FactureFournisseur $creditNote Credit note
+	 * @param Facture|FactureFournisseur $source Source invoice
+	 * @param string $objectType Traceability object type
+	 * @return array<int,array<int,array{source_line_id:int,qty:float}>>
+	 */
+	private function allocateCreditLinesOnSourceLines($creditNote, $source, $objectType)
+	{
+		global $langs;
+
+		$sourceLinesByProduct = $this->buildStockableLineRowsByProduct($source);
+		$alreadyReturnedBySourceLine = $this->getAlreadyReturnedQuantitiesBySourceLine((int) $source->id, $objectType);
+		$allocations = array();
+		$epsilon = 0.00001;
+
+		foreach ($sourceLinesByProduct as $productId => $sourceLines) {
+			foreach ($sourceLines as $sourceIndex => $sourceLine) {
+				$sourceLineId = (int) $sourceLine['line_id'];
+				$alreadyQty = isset($alreadyReturnedBySourceLine[$sourceLineId]) ? (float) $alreadyReturnedBySourceLine[$sourceLineId] : 0.0;
+				$sourceLinesByProduct[$productId][$sourceIndex]['available_qty'] = max(0, (float) $sourceLine['qty'] - $alreadyQty);
+			}
+		}
+
+		foreach ($creditNote->lines as $creditLine) {
+			if (empty($creditLine->fk_product)) {
+				continue;
+			}
+
+			$product = new Product($this->db);
+			if ($product->fetch((int) $creditLine->fk_product) <= 0 || !$this->isStockableProduct($product)) {
+				continue;
+			}
+
+			$productId = (int) $creditLine->fk_product;
+			$remainingQty = abs((float) $creditLine->qty);
+			if ($remainingQty <= $epsilon) {
+				continue;
+			}
+
+			if (empty($sourceLinesByProduct[$productId])) {
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
+				return array();
+			}
+
+			foreach ($sourceLinesByProduct[$productId] as $sourceIndex => $sourceLine) {
+				if ($remainingQty <= $epsilon) {
+					break;
+				}
+
+				$availableQty = (float) $sourceLine['available_qty'];
+				if ($availableQty <= $epsilon) {
+					continue;
+				}
+
+				$allocatedQty = min($remainingQty, $availableQty);
+				$creditLineId = (int) $creditLine->id;
+				if (empty($allocations[$creditLineId])) {
+					$allocations[$creditLineId] = array();
+				}
+				$allocations[$creditLineId][] = array(
+					'source_line_id' => (int) $sourceLine['line_id'],
+					'qty' => $allocatedQty,
+				);
+
+				$sourceLinesByProduct[$productId][$sourceIndex]['available_qty'] = $availableQty - $allocatedQty;
+				$remainingQty -= $allocatedQty;
+			}
+
+			if ($remainingQty > $epsilon) {
+				$this->setError($langs->trans('DoliStockReturnPartialQtyUnavailable'));
+				return array();
+			}
+		}
+
+		return $allocations;
+	}
+
+	/**
+	 * Build stockable invoice line rows grouped by product.
+	 *
+	 * @param Facture|FactureFournisseur $invoice Invoice
+	 * @return array<int,array<int,array{line_id:int,qty:float}>>
+	 */
+	private function buildStockableLineRowsByProduct($invoice)
+	{
+		$rows = array();
+
+		foreach ($invoice->lines as $line) {
+			if (empty($line->fk_product)) {
+				continue;
+			}
+
+			$product = new Product($this->db);
+			if ($product->fetch((int) $line->fk_product) <= 0 || !$this->isStockableProduct($product)) {
+				continue;
+			}
+
+			$productId = (int) $line->fk_product;
+			if (empty($rows[$productId])) {
+				$rows[$productId] = array();
+			}
+			$rows[$productId][] = array(
+				'line_id' => (int) $line->id,
+				'qty' => abs((float) $line->qty),
+			);
+		}
+
+		foreach ($rows as $productId => $productRows) {
+			usort($rows[$productId], function ($a, $b) {
+				if ((int) $a['line_id'] === (int) $b['line_id']) {
+					return 0;
+				}
+				return ((int) $a['line_id'] < (int) $b['line_id']) ? -1 : 1;
+			});
+		}
+
+		ksort($rows);
+		return $rows;
+	}
+
+	/**
+	 * Get quantities already processed for one source invoice, grouped by source line.
+	 *
+	 * @param int $sourceInvoiceId Source invoice id
+	 * @param string $objectType Traceability object type
+	 * @return array<int,float>
+	 */
+	private function getAlreadyReturnedQuantitiesBySourceLine($sourceInvoiceId, $objectType)
+	{
+		$map = array();
+		$entityKey = ($objectType === 'supplier_credit_note' ? 'supplier_invoice' : 'invoice');
+
+		$sql = "SELECT d.fk_source_invoice_line, SUM(ABS(d.qty)) as qty";
+		$sql .= " FROM ".$this->db->prefix()."dolistockreturn_returndet as d";
+		$sql .= " INNER JOIN ".$this->db->prefix()."dolistockreturn_return as r ON r.rowid = d.fk_return";
+		$sql .= " WHERE r.fk_source_invoice = ".((int) $sourceInvoiceId);
+		$sql .= " AND r.object_type = '".$this->db->escape($objectType)."'";
+		$sql .= " AND r.status = 1";
+		$sql .= " AND d.fk_source_invoice_line IS NOT NULL";
+		$sql .= " AND r.entity IN (".getEntity($entityKey).")";
+		$sql .= " GROUP BY d.fk_source_invoice_line";
+
+		$resql = $this->db->query($sql);
+		if (!$resql) {
+			$this->setError($this->db->lasterror());
+			return $map;
+		}
+
+		while ($obj = $this->db->fetch_object($resql)) {
+			$map[(int) $obj->fk_source_invoice_line] = (float) $obj->qty;
+		}
+		$this->db->free($resql);
+
 		return $map;
 	}
 

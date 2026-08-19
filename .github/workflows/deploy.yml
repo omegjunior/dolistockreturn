@@ -1,0 +1,34 @@
+name: Deploy DOLISTOCKRETURN to local XAMPP
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-local:
+    # Utiliser le runner local
+    runs-on: self-hosted
+
+    steps:
+      - name: Configurer safe.directory
+        shell: powershell
+        run: |
+          git config --global --add safe.directory "C:/xampp/htdocs/librairie-lnd/custom/dolistockreturn"
+
+      - name: Setup Git SSH environment
+        shell: powershell
+        run: |
+          $env:PATH += ";C:\Program Files\Git\usr\bin"
+          ssh -V
+
+      - name: Synchroniser le module
+        shell: powershell
+        run: |
+          cd "C:\xampp\htdocs\librairie-lnd\custom\dolistockreturn"
+          git fetch origin main
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git reset --hard origin/main
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "✅ Module DOLISTOCKRETURN mis a jour le $(Get-Date)"

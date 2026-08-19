@@ -155,6 +155,62 @@ class StockReturnServiceTest extends CommonClassTest
 		$this->assertStringContainsString('disponibles', strtolower($this->service->error));
 	}
 
+	public function testCustomerAggregatedPartialCreditLineIsAllocatedAcrossSeveralSourceLines()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('CUSTALLOCSRC');
+		$warehouseId = $this->createWarehouse('WH-CUSTALLOCSRC');
+		$source = $this->fetchCustomerInvoice($this->createCustomerInvoiceWithLines(Facture::TYPE_STANDARD, 0, array(
+			array($productId, 3),
+			array($productId, 2),
+		)));
+		$this->insertStockMovement($source->id, 'facture', $productId, $warehouseId, -5);
+
+		$creditNote = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_CREDIT_NOTE, $source->id, $productId, -4));
+		$returnableLines = $this->service->getReturnableLines($creditNote);
+
+		$this->assertCount(2, $returnableLines);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[0]['source_line_id']);
+		$this->assertEquals(3.0, (float) $returnableLines[0]['qty']);
+		$this->assertEquals((int) $source->lines[1]->id, (int) $returnableLines[1]['source_line_id']);
+		$this->assertEquals(1.0, (float) $returnableLines[1]['qty']);
+
+		$returnId = $this->service->createStockReturn($creditNote, 0, $this->user);
+
+		$this->assertGreaterThan(0, $returnId, $this->service->error);
+		$this->assertReturnDetailTotal($returnId, $productId, $warehouseId, 4.0, 2);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[0]->id, 3.0);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[1]->id, 1.0);
+	}
+
+	public function testCustomerSeveralPartialCreditLinesCanConsumeOneSourceLine()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('CUSTALLOCCRN');
+		$warehouseId = $this->createWarehouse('WH-CUSTALLOCCRN');
+		$source = $this->fetchCustomerInvoice($this->createCustomerInvoice(Facture::TYPE_STANDARD, 0, $productId, 5));
+		$this->insertStockMovement($source->id, 'facture', $productId, $warehouseId, -5);
+		$creditNote = $this->fetchCustomerInvoice($this->createCustomerInvoiceWithLines(Facture::TYPE_CREDIT_NOTE, $source->id, array(
+			array($productId, -2),
+			array($productId, -1),
+		)));
+
+		$returnableLines = $this->service->getReturnableLines($creditNote);
+		$this->assertCount(2, $returnableLines);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[0]['source_line_id']);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[1]['source_line_id']);
+
+		$returnId = $this->service->createStockReturn($creditNote, 0, $this->user);
+
+		$this->assertGreaterThan(0, $returnId, $this->service->error);
+		$this->assertReturnDetailTotal($returnId, $productId, $warehouseId, 3.0, 2);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[0]->id, 3.0);
+	}
+
 	public function testCustomerBatchProductUsesUniqueSourceBatch()
 	{
 		global $conf;
@@ -322,6 +378,64 @@ class StockReturnServiceTest extends CommonClassTest
 		$creditNoteC = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, $productId, -1));
 		$this->assertFalse($this->service->isEligibleSupplierCreditNote($creditNoteC));
 		$this->assertStringContainsString('disponibles', strtolower($this->service->error));
+	}
+
+	public function testSupplierAggregatedPartialCreditLineIsAllocatedAcrossSeveralSourceLines()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('SUPALLOCSRC');
+		$warehouseId = $this->createWarehouse('WH-SUPALLOCSRC');
+		$source = $this->fetchSupplierInvoice($this->createSupplierInvoiceWithLines(FactureFournisseur::TYPE_STANDARD, 0, array(
+			array($productId, 3),
+			array($productId, 2),
+		)));
+		$this->insertStockMovement($source->id, 'invoice_supplier', $productId, $warehouseId, 5);
+		$this->insertStockMovement(930001, 'test_seed', $productId, $warehouseId, 6);
+
+		$creditNote = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, $productId, -4));
+		$returnableLines = $this->service->getSupplierReturnableLines($creditNote);
+
+		$this->assertCount(2, $returnableLines);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[0]['source_line_id']);
+		$this->assertEquals(3.0, (float) $returnableLines[0]['qty']);
+		$this->assertEquals((int) $source->lines[1]->id, (int) $returnableLines[1]['source_line_id']);
+		$this->assertEquals(1.0, (float) $returnableLines[1]['qty']);
+
+		$returnId = $this->service->createSupplierStockOutput($creditNote, 0, $this->user);
+
+		$this->assertGreaterThan(0, $returnId, $this->service->error);
+		$this->assertReturnDetailTotal($returnId, $productId, $warehouseId, -4.0, 2);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[0]->id, -3.0);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[1]->id, -1.0);
+	}
+
+	public function testSupplierSeveralPartialCreditLinesCanConsumeOneSourceLine()
+	{
+		global $conf;
+
+		$conf->global->DOLISTOCKRETURN_ALLOW_PARTIAL_CREDIT_NOTES = 1;
+		$productId = $this->createProduct('SUPALLOCCRN');
+		$warehouseId = $this->createWarehouse('WH-SUPALLOCCRN');
+		$source = $this->fetchSupplierInvoice($this->createSupplierInvoice(FactureFournisseur::TYPE_STANDARD, 0, $productId, 5));
+		$this->insertStockMovement($source->id, 'invoice_supplier', $productId, $warehouseId, 5);
+		$this->insertStockMovement(930002, 'test_seed', $productId, $warehouseId, 6);
+		$creditNote = $this->fetchSupplierInvoice($this->createSupplierInvoiceWithLines(FactureFournisseur::TYPE_CREDIT_NOTE, $source->id, array(
+			array($productId, -2),
+			array($productId, -1),
+		)));
+
+		$returnableLines = $this->service->getSupplierReturnableLines($creditNote);
+		$this->assertCount(2, $returnableLines);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[0]['source_line_id']);
+		$this->assertEquals((int) $source->lines[0]->id, (int) $returnableLines[1]['source_line_id']);
+
+		$returnId = $this->service->createSupplierStockOutput($creditNote, 0, $this->user);
+
+		$this->assertGreaterThan(0, $returnId, $this->service->error);
+		$this->assertReturnDetailTotal($returnId, $productId, $warehouseId, -3.0, 2);
+		$this->assertReturnDetailForSourceLine($returnId, (int) $source->lines[0]->id, -3.0);
 	}
 
 	public function testSupplierBatchProductUsesUniqueSourceBatch()
@@ -525,6 +639,29 @@ class StockReturnServiceTest extends CommonClassTest
 		return (int) $invoice->id;
 	}
 
+	private function createCustomerInvoiceWithLines($type, $sourceId, $lines)
+	{
+		$invoice = new Facture($this->db);
+		$invoice->socid = $this->createThirdparty(false);
+		$invoice->type = (int) $type;
+		$invoice->date = dol_now();
+		$invoice->fk_facture_source = (int) $sourceId;
+		$invoice->ref_client = '';
+		$invoice->ref_customer = '';
+		$invoice->note_public = '';
+		$invoice->note_private = '';
+
+		$res = $invoice->create($this->user);
+		$this->assertGreaterThan(0, $res, (string) $invoice->error);
+		foreach ($lines as $line) {
+			$res = $invoice->addline('DoliStockReturn test line', 10, (float) $line[1], 0, 0, 0, (int) $line[0]);
+			$this->assertGreaterThan(0, $res, (string) $invoice->error);
+		}
+
+		$this->assertDbQuery("UPDATE ".MAIN_DB_PREFIX."facture SET fk_statut = ".Facture::STATUS_VALIDATED." WHERE rowid = ".((int) $invoice->id));
+		return (int) $invoice->id;
+	}
+
 	private function createSupplierInvoice($type, $sourceId, $productId, $qty)
 	{
 		$invoice = new FactureFournisseur($this->db);
@@ -538,6 +675,26 @@ class StockReturnServiceTest extends CommonClassTest
 		$this->assertGreaterThan(0, $res, (string) $invoice->error);
 		$res = $invoice->addline('DoliStockReturn supplier test line', 10, 0, 0, 0, (float) $qty, (int) $productId);
 		$this->assertGreaterThan(0, $res, (string) $invoice->error);
+
+		$this->assertDbQuery("UPDATE ".MAIN_DB_PREFIX."facture_fourn SET fk_statut = ".FactureFournisseur::STATUS_VALIDATED." WHERE rowid = ".((int) $invoice->id));
+		return (int) $invoice->id;
+	}
+
+	private function createSupplierInvoiceWithLines($type, $sourceId, $lines)
+	{
+		$invoice = new FactureFournisseur($this->db);
+		$invoice->socid = $this->createThirdparty(true);
+		$invoice->type = (int) $type;
+		$invoice->date = dol_now();
+		$invoice->ref_supplier = 'DSR-SUP-'.mt_rand(10000, 99999);
+		$invoice->fk_facture_source = (int) $sourceId;
+
+		$res = $invoice->create($this->user);
+		$this->assertGreaterThan(0, $res, (string) $invoice->error);
+		foreach ($lines as $line) {
+			$res = $invoice->addline('DoliStockReturn supplier test line', 10, 0, 0, 0, (float) $line[1], (int) $line[0]);
+			$this->assertGreaterThan(0, $res, (string) $invoice->error);
+		}
 
 		$this->assertDbQuery("UPDATE ".MAIN_DB_PREFIX."facture_fourn SET fk_statut = ".FactureFournisseur::STATUS_VALIDATED." WHERE rowid = ".((int) $invoice->id));
 		return (int) $invoice->id;
@@ -652,6 +809,39 @@ class StockReturnServiceTest extends CommonClassTest
 		if ($batch !== null) {
 			$this->assertEquals((string) $batch, (string) $obj->batch);
 		}
+		$this->db->free($res);
+	}
+
+	private function assertReturnDetailTotal($returnId, $productId, $warehouseId, $qty, $count)
+	{
+		$sql = "SELECT COUNT(*) as nb, SUM(d.qty) as detail_qty, SUM(sm.value) as movement_qty, MIN(d.fk_entrepot) as min_warehouse, MAX(d.fk_entrepot) as max_warehouse";
+		$sql .= " FROM ".MAIN_DB_PREFIX."dolistockreturn_returndet as d";
+		$sql .= " LEFT JOIN ".MAIN_DB_PREFIX."stock_mouvement as sm ON sm.rowid = d.fk_stock_mouvement";
+		$sql .= " WHERE d.fk_return = ".((int) $returnId);
+		$sql .= " AND d.fk_product = ".((int) $productId);
+		$res = $this->db->query($sql);
+		$this->assertTrue($res !== false, (string) $this->db->lasterror());
+		$obj = $this->db->fetch_object($res);
+		$this->assertNotEmpty($obj);
+		$this->assertEquals((int) $count, (int) $obj->nb);
+		$this->assertEquals((float) $qty, (float) $obj->detail_qty);
+		$this->assertEquals((float) $qty, (float) $obj->movement_qty);
+		$this->assertEquals((int) $warehouseId, (int) $obj->min_warehouse);
+		$this->assertEquals((int) $warehouseId, (int) $obj->max_warehouse);
+		$this->db->free($res);
+	}
+
+	private function assertReturnDetailForSourceLine($returnId, $sourceLineId, $qty)
+	{
+		$sql = "SELECT SUM(qty) as qty";
+		$sql .= " FROM ".MAIN_DB_PREFIX."dolistockreturn_returndet";
+		$sql .= " WHERE fk_return = ".((int) $returnId);
+		$sql .= " AND fk_source_invoice_line = ".((int) $sourceLineId);
+		$res = $this->db->query($sql);
+		$this->assertTrue($res !== false, (string) $this->db->lasterror());
+		$obj = $this->db->fetch_object($res);
+		$this->assertNotEmpty($obj);
+		$this->assertEquals((float) $qty, (float) $obj->qty);
 		$this->db->free($res);
 	}
 
